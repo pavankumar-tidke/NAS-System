@@ -63,6 +63,13 @@ def _device_kind(rotational: int | None, trans: str | None) -> str:
     return "unknown"
 
 
+def _lsblk_has_partition_child(node: dict[str, Any]) -> bool:
+    for ch in node.get("children") or []:
+        if isinstance(ch, dict) and (ch.get("type") or "").lower() == "part":
+            return True
+    return False
+
+
 def _flatten_lsblk(node: dict[str, Any], disk_model: str | None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     name = node.get("name") or ""
@@ -88,13 +95,13 @@ def _flatten_lsblk(node: dict[str, Any], disk_model: str | None) -> list[dict[st
     if typ == "disk":
         disk_model = (node.get("model") or "").strip() or disk_model
 
-    if typ in ("part", "crypt", "lvm") and path.startswith("/dev/"):
+    def _append_row(t: str) -> None:
         out.append(
             {
                 "id": path,
                 "name": name,
                 "path": path,
-                "type": typ,
+                "type": t,
                 "size_bytes": size,
                 "fstype": fstype,
                 "label": label,
@@ -105,6 +112,17 @@ def _flatten_lsblk(node: dict[str, Any], disk_model: str | None) -> list[dict[st
                 "connection": _human_connection(str(trans) if trans else None, str(hotplug) if hotplug else None),
             }
         )
+
+    if typ in ("part", "crypt", "lvm") and path.startswith("/dev/"):
+        _append_row(typ)
+
+    # Whole-device volumes (no MBR/GPT partitions) only appear as TYPE=disk in lsblk; USB HDDs
+    # are often formatted or shipped that way. Skip when partition children exist (use sda1, etc.).
+    children = node.get("children") or []
+    if typ == "disk" and path.startswith("/dev/") and not _lsblk_has_partition_child(node):
+        has_only_disk_level = not children or bool(fstype) or bool(mp and str(mp).strip())
+        if has_only_disk_level:
+            _append_row("disk")
 
     for ch in node.get("children") or []:
         if isinstance(ch, dict):
