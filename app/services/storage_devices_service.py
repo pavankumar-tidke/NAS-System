@@ -19,6 +19,79 @@ from fastapi import HTTPException, status
 from app.core.config import get_settings
 from app.db.mongo import get_db
 
+# lsblk NAME values that map to /dev/<name> (avoid path injection if NAME is ever odd).
+_BLOCK_KNAME_SAFE = re.compile(r"^[a-zA-Z0-9_\-\+]+$")
+
+
+def _infer_dev_path(name: str, path: str, typ: str) -> str:
+    """When lsblk omits PATH, derive /dev/<kname> so partitions (e.g. sda1) are mountable."""
+    p = (path or "").strip()
+    if p.startswith("/dev/"):
+        return p
+    if typ not in ("part", "crypt", "lvm", "disk") or not name:
+        return p
+    if "/" in name or ".." in name or not _BLOCK_KNAME_SAFE.match(name):
+        return p
+    return f"/dev/{name}"
+
+
+def _sysfs_block_size_bytes(block_name: str) -> int | None:
+    """Sector count from sysfs × 512; lsblk sometimes reports size 0 on parent disk nodes."""
+    if not block_name or not _BLOCK_KNAME_SAFE.match(block_name):
+        return None
+    try:
+        raw = Path(f"/sys/class/block/{block_name}/size").read_text().strip()
+        sectors = int(raw)
+        if sectors <= 0:
+            return None
+        return sectors * 512
+    except (OSError, ValueError):
+        return None
+
+
+def _row_sysfs_block_name(row: dict[str, Any]) -> str | None:
+    n = (row.get("name") or "").strip()
+    if n and _BLOCK_KNAME_SAFE.match(n):
+        return n
+    path = (row.get("path") or "").strip()
+    if not path.startswith("/dev/"):
+        return None
+    base = path[len("/dev/") :].split("/")[-1]
+    if base and _BLOCK_KNAME_SAFE.match(base):
+        return base
+    return None
+
+
+def _blkid_probe_fstype(dev_path: str) -> str | None:
+    try:
+        r = subprocess.run(
+            ["blkid", "-o", "value", "-s", "TYPE", dev_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        out = (r.stdout or "").strip()
+        return out or None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
+def _enrich_block_device_row(row: dict[str, Any]) -> None:
+    """Backfill size and fstype when lsblk JSON is sparse (common for USB + parent disk rows)."""
+    path = (row.get("path") or "").strip()
+    size = int(row.get("size_bytes") or 0)
+    if size == 0:
+        bn = _row_sysfs_block_name(row)
+        if bn:
+            sz = _sysfs_block_size_bytes(bn)
+            if sz:
+                row["size_bytes"] = sz
+    if path.startswith("/dev/") and not row.get("fstype"):
+        ft = _blkid_probe_fstype(path)
+        if ft:
+            row["fstype"] = ft
+
 
 def _run_lsblk_json() -> dict[str, Any] | None:
     try:
@@ -73,8 +146,8 @@ def _lsblk_has_partition_child(node: dict[str, Any]) -> bool:
 def _flatten_lsblk(node: dict[str, Any], disk_model: str | None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     name = node.get("name") or ""
-    path = node.get("path") or ""
     typ = (node.get("type") or "").lower()
+    path = _infer_dev_path(str(name), str(node.get("path") or ""), typ)
     size = int(node.get("size") or 0)
     fstype = (node.get("fstype") or "") or None
     label = (node.get("label") or "") or None
@@ -148,6 +221,8 @@ def discover_block_devices() -> list[dict[str, Any]]:
         if p and p not in seen:
             seen.add(p)
             uniq.append(d)
+    for d in uniq:
+        _enrich_block_device_row(d)
     return uniq
 
 
