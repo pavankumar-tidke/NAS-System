@@ -19,7 +19,7 @@ from app.core.error_handlers import register_exception_handlers
 from app.core.logging_setup import get_nas_logger, setup_nas_logging
 from app.db.mongo import close_db, connect_db, ensure_indexes, ping_mongodb
 from app.db.mongo_errors import mongo_startup_banner, summarize_mongo_error
-from app.routes import auth, dashboard, devices, files, storage, sync, users
+from app.routes import auth, dashboard, devices, files, files_browse, storage, sync, sync_config, users
 
 setup_nas_logging()
 _uvicorn_logger = logging.getLogger("uvicorn.error")
@@ -38,7 +38,13 @@ TAGS_METADATA = [
             "paginated list with filename search and type filter, download, preview, ranged video."
         ),
     },
-    {"name": "storage", "description": "Disk usage for the NAS data volume."},
+    {
+        "name": "storage",
+        "description": (
+            "Disk usage for STORAGE_PATH, block-device discovery (lsblk), optional mount/unmount/format, "
+            "and directory browse under allowed mount prefixes."
+        ),
+    },
     {"name": "dashboard", "description": "Aggregated metrics for the React dashboard home."},
     {
         "name": "sync",
@@ -156,9 +162,11 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(devices.router)
+    app.include_router(files_browse.router)
     app.include_router(files.router)
     app.include_router(storage.router)
     app.include_router(sync.router)
+    app.include_router(sync_config.router)
     app.include_router(dashboard.router)
 
     @app.websocket("/ws")

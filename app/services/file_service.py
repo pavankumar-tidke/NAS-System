@@ -62,6 +62,30 @@ def _folder_for_type(ftype: FileType) -> str:
     }[ftype]
 
 
+def _normalize_path_under_files(raw: str | None) -> str | None:
+    """Safe relative path under storage/{user_id}/files/ (segments only).
+
+    ``None`` = use legacy typed folders (images/videos/...). ``""`` = root of ``files/``.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return ""
+    parts: list[str] = []
+    for p in s.replace("\\", "/").strip("/").split("/"):
+        p = p.strip()
+        if not p or p == ".":
+            continue
+        if p == "..":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid destination path",
+            )
+        parts.append(p)
+    return "/".join(parts) if parts else ""
+
+
 def guess_media_type(filename: str) -> str:
     mt, _ = mimetypes.guess_type(filename)
     return mt or "application/octet-stream"
@@ -240,8 +264,13 @@ async def save_upload(
     device_id: str | None,
     uploaded_by_device_id: str | None,
     declared_content_length: int | None = None,
+    relative_path: str | None = None,
 ) -> FilePublic:
-    """Stream upload to disk and persist metadata."""
+    """Stream upload to disk and persist metadata.
+
+    If ``relative_path`` is set, files are stored under ``storage/{user_id}/files/{relative_path}/``.
+    Otherwise legacy layout ``storage/{user_id}/{images|videos|documents|others}/`` is used.
+    """
     settings = get_settings()
     max_size = settings.max_upload_size
     root = settings.storage_path
@@ -261,8 +290,16 @@ async def save_upload(
     ext = Path(safe_name).suffix.lower()
 
     unique = f"{uuid.uuid4().hex}_{safe_name}"
-    user_dir = root / "storage" / user_id / subdir
-    user_dir.mkdir(parents=True, exist_ok=True)
+    dest_under_files = _normalize_path_under_files(relative_path)
+    if dest_under_files is not None:
+        user_dir = root / "storage" / user_id / "files"
+        if dest_under_files:
+            for segment in dest_under_files.split("/"):
+                user_dir = user_dir / segment
+        user_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        user_dir = root / "storage" / user_id / subdir
+        user_dir.mkdir(parents=True, exist_ok=True)
     dest = user_dir / unique
     relative = str(dest.relative_to(root))
 

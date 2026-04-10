@@ -40,6 +40,10 @@ async def upload_file(
     file: Annotated[UploadFile, File(..., description="File body (multipart field `file`)")],
     device_id: str | None = Form(default=None),
     uploaded_by_device_id: str | None = Form(default=None),
+    path: str | None = Form(
+        default=None,
+        description="Optional destination under storage/{user_id}/files/ (e.g. Photos/Mobile)",
+    ),
 ) -> APIEnvelope:
     raw_cl = request.headers.get("content-length")
     declared: int | None = None
@@ -51,6 +55,7 @@ async def upload_file(
         device_id=device_id,
         uploaded_by_device_id=uploaded_by_device_id,
         declared_content_length=declared,
+        relative_path=path,
     )
     log_file_upload(
         user_id=user.id,

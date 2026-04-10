@@ -49,6 +49,8 @@ async def ensure_indexes() -> None:
     await db.files.create_index([("user_id", 1), ("created_at", -1)])
     await db.files.create_index([("user_id", 1), ("type", 1), ("created_at", -1)])
     await db.files.create_index([("user_id", 1), ("updated_at", -1)])
+    await db.sync_preferences.create_index("user_id", unique=True)
+    await db.storage_device_prefs.create_index("device_path", unique=True)
 
 
 async def ping_mongodb() -> str:

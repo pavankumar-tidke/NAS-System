@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     heartbeat_interval_seconds: int = Field(default=30, alias="HEARTBEAT_INTERVAL")
     device_timeout_seconds: int = Field(default=120, alias="DEVICE_TIMEOUT")
 
+    # Block storage (Pi): requires privileges when enabled
+    nas_storage_ops_enabled: bool = Field(default=False, alias="NAS_STORAGE_OPS_ENABLED")
+    nas_format_enabled: bool = Field(default=False, alias="NAS_FORMAT_ENABLED")
+    # Comma-separated allowed mount parent paths (e.g. /mnt,/media)
+    storage_mount_allow_prefixes: str = Field(default="/mnt,/media", alias="STORAGE_MOUNT_ALLOW_PREFIXES")
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _strip_cors(cls, v: str) -> str:
@@ -62,6 +68,10 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         parts = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
         return parts if parts else ["http://localhost:8080"]
+
+    def storage_mount_allow_prefixes_list(self) -> list[str]:
+        parts = [p.strip().rstrip("/") for p in self.storage_mount_allow_prefixes.split(",") if p.strip()]
+        return parts if parts else ["/mnt", "/media"]
 
 
 @lru_cache
