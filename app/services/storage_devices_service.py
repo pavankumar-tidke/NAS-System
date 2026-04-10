@@ -93,6 +93,22 @@ def _enrich_block_device_row(row: dict[str, Any]) -> None:
             row["fstype"] = ft
 
 
+def _is_kernel_virtual_storage_noise(row: dict[str, Any]) -> bool:
+    """
+    Exclude devices that look like block devices but are not user-attached disks.
+
+    Raspberry Pi OS uses zram for compressed swap and may expose loop+swap; these are
+    not USB/SATA volumes and confuse the Storage page if listed next to mmcblk/USB drives.
+    """
+    name = (row.get("name") or "").lower()
+    fst = (row.get("fstype") or "").lower()
+    if name.startswith("zram"):
+        return True
+    if name.startswith("loop") and fst == "swap":
+        return True
+    return False
+
+
 def _run_lsblk_json() -> dict[str, Any] | None:
     try:
         r = subprocess.run(
@@ -223,7 +239,7 @@ def discover_block_devices() -> list[dict[str, Any]]:
             uniq.append(d)
     for d in uniq:
         _enrich_block_device_row(d)
-    return uniq
+    return [d for d in uniq if not _is_kernel_virtual_storage_noise(d)]
 
 
 def _usage_for_path(mount_path: str | None) -> dict[str, float | int] | None:
