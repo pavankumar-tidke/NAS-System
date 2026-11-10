@@ -19,7 +19,7 @@ from app.core.error_handlers import register_exception_handlers
 from app.core.logging_setup import get_nas_logger, setup_nas_logging
 from app.db.mongo import close_db, connect_db, ensure_indexes, ping_mongodb
 from app.db.mongo_errors import mongo_startup_banner, summarize_mongo_error
-from app.routes import auth, dashboard, devices, files, files_browse, health, storage, sync, sync_config, users
+from app.routes import auth, dashboard, devices, files, files_browse, health, settings, storage, sync, sync_config, users
 
 setup_nas_logging()
 _uvicorn_logger = logging.getLogger("uvicorn.error")
@@ -50,6 +50,7 @@ TAGS_METADATA = [
         ),
     },
     {"name": "dashboard", "description": "Aggregated metrics for the React dashboard home."},
+    {"name": "settings", "description": "Admin settings (primary storage path; may delegate to edge agent)."},
     {
         "name": "sync",
         "description": (
@@ -171,6 +172,7 @@ def create_app() -> FastAPI:
     app.include_router(files_browse.router)
     app.include_router(files.router)
     app.include_router(storage.router)
+    app.include_router(settings.router)
     app.include_router(sync.router)
     app.include_router(sync_config.router)
     app.include_router(dashboard.router)
