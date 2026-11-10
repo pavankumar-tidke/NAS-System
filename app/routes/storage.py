@@ -4,18 +4,21 @@ Storage volume status under STORAGE_PATH, block-device discovery, and optional m
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
+from app.core.agent_client import AgentClient, agent_mode_enabled
 from app.core.config import get_settings
 from app.deps import get_current_user
 from app.middleware.rbac import require_roles
 from app.models.user import Role, UserInDB
 from app.schemas.api_response import APIEnvelope, ok
-from app.services import storage_service
-from app.services import storage_devices_service as storage_hw
 
 router = APIRouter(prefix="/storage", tags=["storage"])
+
+
+def _auth_header(request: Request) -> str | None:
+    return request.headers.get("authorization")
 
 
 class StorageStatus(BaseModel):
@@ -33,7 +36,19 @@ class StorageStatus(BaseModel):
     summary="Disk usage",
     description="Uses `shutil.disk_usage` on `STORAGE_PATH` (Pi HDD/SSD mount).",
 )
-async def storage_status(_user: Annotated[UserInDB, Depends(get_current_user)]) -> APIEnvelope:
+async def storage_status(
+    request: Request,
+    _user: Annotated[UserInDB, Depends(get_current_user)],
+) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/storage/status",
+            _auth_header(request),
+            context="storage status",
+        )
+
+    from app.services import storage_service
+
     data = storage_service.get_storage_status()
     return ok(StorageStatus(**data).model_dump(mode="json"), "Storage status loaded")
 
@@ -69,8 +84,18 @@ async def storage_capabilities(_user: Annotated[UserInDB, Depends(get_current_us
     description="Discovery via `lsblk` (partitions); merged with saved labels and usage when mounted.",
 )
 async def list_storage_devices(
+    request: Request,
     _user: Annotated[UserInDB, Depends(require_roles(Role.member, Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/storage/devices",
+            _auth_header(request),
+            context="storage devices",
+        )
+
+    from app.services import storage_devices_service as storage_hw
+
     devices = await storage_hw.build_devices_response()
     return ok(devices, "Storage devices loaded")
 
@@ -92,9 +117,21 @@ class DeviceConfigBody(BaseModel):
     summary="Save device preferences",
 )
 async def save_storage_device_config(
+    request: Request,
     body: DeviceConfigBody,
     _user: Annotated[UserInDB, Depends(require_roles(Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/storage/devices/config",
+            _auth_header(request),
+            method="POST",
+            json_body=body.model_dump(),
+            context="storage device config",
+        )
+
+    from app.services import storage_devices_service as storage_hw
+
     storage_hw.validate_device_path(body.device_path)
     if body.suggested_mount_path:
         storage_hw.validate_mount_path(body.suggested_mount_path)
@@ -121,9 +158,21 @@ class MountBody(BaseModel):
     summary="Mount a block device",
 )
 async def mount_storage_device(
+    request: Request,
     body: MountBody,
     _user: Annotated[UserInDB, Depends(require_roles(Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/storage/mount",
+            _auth_header(request),
+            method="POST",
+            json_body=body.model_dump(),
+            context="mount",
+        )
+
+    from app.services import storage_devices_service as storage_hw
+
     storage_hw.try_mount(body.device_path, body.mount_point, fstype=body.fstype)
     devices = await storage_hw.build_devices_response()
     return ok(devices, "Mounted")
@@ -140,9 +189,21 @@ class UnmountBody(BaseModel):
     summary="Unmount by mount point",
 )
 async def unmount_storage_device(
+    request: Request,
     body: UnmountBody,
     _user: Annotated[UserInDB, Depends(require_roles(Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/storage/unmount",
+            _auth_header(request),
+            method="POST",
+            json_body=body.model_dump(),
+            context="unmount",
+        )
+
+    from app.services import storage_devices_service as storage_hw
+
     storage_hw.try_unmount(body.mount_point, lazy=body.lazy)
     devices = await storage_hw.build_devices_response()
     return ok(devices, "Unmounted")
@@ -159,9 +220,21 @@ class FormatBody(BaseModel):
     summary="Format a partition (destructive)",
 )
 async def format_storage_device(
+    request: Request,
     body: FormatBody,
     _user: Annotated[UserInDB, Depends(require_roles(Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/storage/format",
+            _auth_header(request),
+            method="POST",
+            json_body=body.model_dump(),
+            context="format",
+        )
+
+    from app.services import storage_devices_service as storage_hw
+
     storage_hw.try_format(body.device_path, body.fstype)
     devices = await storage_hw.build_devices_response()
     return ok(devices, "Formatted")
@@ -180,8 +253,19 @@ class BrowseEntry(BaseModel):
     summary="List directory on an allowed mount",
 )
 async def browse_storage_path(
+    request: Request,
     path: Annotated[str, Query(description="Absolute path under allowed mount prefixes")],
     _user: Annotated[UserInDB, Depends(require_roles(Role.member, Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/storage/browse",
+            _auth_header(request),
+            params={"path": path},
+            context="storage browse",
+        )
+
+    from app.services import storage_devices_service as storage_hw
+
     entries = storage_hw.list_directory(path)
     return ok({"path": path, "entries": entries}, "Directory listed")

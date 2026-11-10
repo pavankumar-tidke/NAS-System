@@ -5,22 +5,21 @@ NAS files: multipart upload, paginated listing, download, image preview, ranged 
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response
 
+from app.core.agent_client import AgentClient, agent_mode_enabled
 from app.core.audit_log import log_file_download, log_file_upload
 from app.deps import get_current_user
 from app.middleware.rbac import require_roles
 from app.models.file import FilePublic, FileType
 from app.models.user import Role, UserInDB
 from app.schemas.api_response import APIEnvelope, ok
-from app.services import file_service
-from app.services.file_streaming import iter_file_bytes, parse_range_header
 
 router = APIRouter(prefix="/files", tags=["files"])
 
 
-def _file_media_type(meta: FilePublic) -> str:
-    return meta.mime_type or file_service.guess_media_type(meta.original_filename)
+def _auth_header(request: Request) -> str | None:
+    return request.headers.get("authorization")
 
 
 @router.post(
@@ -45,6 +44,25 @@ async def upload_file(
         description="Optional destination under storage/{user_id}/files/ (e.g. Photos/Mobile)",
     ),
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        envelope = await AgentClient.upload_file(
+            request,
+            file,
+            device_id=device_id,
+            uploaded_by_device_id=uploaded_by_device_id,
+            path=path,
+        )
+        if envelope.data and isinstance(envelope.data, dict) and envelope.data.get("id"):
+            log_file_upload(
+                user_id=user.id,
+                file_id=envelope.data["id"],
+                filename=envelope.data.get("filename", file.filename or ""),
+                size=envelope.data.get("size", 0),
+            )
+        return envelope
+
+    from app.services import file_service
+
     raw_cl = request.headers.get("content-length")
     declared: int | None = None
     if raw_cl and raw_cl.isdigit():
@@ -77,6 +95,7 @@ async def upload_file(
     ),
 )
 async def list_files(
+    request: Request,
     user: Annotated[UserInDB, Depends(get_current_user)],
     limit: Annotated[int, Query(ge=1, le=100, description="Page size (max 100 for Pi)")] = 20,
     offset: Annotated[int, Query(ge=0, description="Offset for pagination")] = 0,
@@ -94,6 +113,27 @@ async def list_files(
     is_admin = user.role == Role.admin
     if user_id and not is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only filter")
+    if agent_mode_enabled():
+        params: dict[str, str | int] = {
+            "limit": limit,
+            "offset": offset,
+            "sort": sort,
+        }
+        if search is not None:
+            params["search"] = search
+        if file_type is not None:
+            params["type"] = file_type
+        if user_id is not None:
+            params["user_id"] = user_id
+        return await AgentClient.get_json(
+            "/files",
+            _auth_header(request),
+            params=params,
+            context="list files",
+        )
+
+    from app.services import file_service
+
     owner_filter = user_id if is_admin else None
     type_filter = FileType(file_type) if file_type is not None else None
     items, total = await file_service.list_files_page(
@@ -127,15 +167,29 @@ async def list_files(
     response_class=FileResponse,
 )
 async def download_file(
+    request: Request,
     file_id: str,
     user: Annotated[UserInDB, Depends(get_current_user)],
-) -> FileResponse:
+) -> FileResponse | Response:
+    if agent_mode_enabled():
+        return await AgentClient.get_binary(
+            f"/files/download/{file_id}",
+            _auth_header(request),
+            context="download",
+        )
+
+    from app.services import file_service
+
     meta = await file_service.get_file_meta(file_id, actor_id=user.id, role=user.role)
     if meta is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     path = file_service.resolve_absolute_path(meta.filepath)
     if not file_service.verify_path_under_storage(path) or not path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing on disk")
+
+    def _file_media_type(meta: FilePublic) -> str:
+        return meta.mime_type or file_service.guess_media_type(meta.original_filename)
+
     log_file_download(user_id=user.id, file_id=meta.id, filename=meta.original_filename, partial=False)
     media = _file_media_type(meta)
     return FileResponse(path=path, filename=meta.original_filename, media_type=media)
@@ -148,9 +202,19 @@ async def download_file(
     response_class=FileResponse,
 )
 async def preview_file(
+    request: Request,
     file_id: str,
     user: Annotated[UserInDB, Depends(get_current_user)],
-) -> FileResponse:
+) -> FileResponse | Response:
+    if agent_mode_enabled():
+        return await AgentClient.get_binary(
+            f"/files/preview/{file_id}",
+            _auth_header(request),
+            context="preview",
+        )
+
+    from app.services import file_service
+
     meta = await file_service.get_file_meta(file_id, actor_id=user.id, role=user.role)
     if meta is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
@@ -162,7 +226,7 @@ async def preview_file(
     path = file_service.resolve_absolute_path(meta.filepath)
     if not file_service.verify_path_under_storage(path) or not path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing on disk")
-    media = _file_media_type(meta)
+    media = meta.mime_type or file_service.guess_media_type(meta.original_filename)
     return FileResponse(path=path, media_type=media, filename=meta.original_filename)
 
 
@@ -177,6 +241,17 @@ async def stream_file(
     file_id: str,
     user: Annotated[UserInDB, Depends(get_current_user)],
 ):
+    if agent_mode_enabled():
+        return await AgentClient.stream_binary(
+            f"/files/stream/{file_id}",
+            _auth_header(request),
+            range_header=request.headers.get("range"),
+            context="stream",
+        )
+
+    from app.services import file_service
+    from app.services.file_streaming import iter_file_bytes, parse_range_header
+
     meta = await file_service.get_file_meta(file_id, actor_id=user.id, role=user.role)
     if meta is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
@@ -184,7 +259,7 @@ async def stream_file(
     if not file_service.verify_path_under_storage(path) or not path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing on disk")
     size = path.stat().st_size
-    media = _file_media_type(meta)
+    media = meta.mime_type or file_service.guess_media_type(meta.original_filename)
     rng = parse_range_header(request.headers.get("range"), size)
     if rng is None:
         log_file_download(user_id=user.id, file_id=meta.id, filename=meta.original_filename, partial=False)
@@ -202,6 +277,8 @@ async def stream_file(
         "Accept-Ranges": "bytes",
         "Content-Length": str(length),
     }
+    from fastapi.responses import StreamingResponse
+
     return StreamingResponse(
         iter_file_bytes(path, start, end),
         media_type=media,
@@ -216,9 +293,19 @@ async def stream_file(
     summary="File metadata",
 )
 async def get_file(
+    request: Request,
     file_id: str,
     user: Annotated[UserInDB, Depends(get_current_user)],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            f"/files/{file_id}",
+            _auth_header(request),
+            context="file metadata",
+        )
+
+    from app.services import file_service
+
     meta = await file_service.get_file_meta(file_id, actor_id=user.id, role=user.role)
     if meta is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
@@ -231,9 +318,20 @@ async def get_file(
     summary="Delete file",
 )
 async def delete_file(
+    request: Request,
     file_id: str,
     user: Annotated[UserInDB, Depends(require_roles(Role.member, Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            f"/files/{file_id}",
+            _auth_header(request),
+            method="DELETE",
+            context="delete file",
+        )
+
+    from app.services import file_service
+
     ok_del = await file_service.delete_file(file_id, actor_id=user.id, role=user.role)
     if not ok_del:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")

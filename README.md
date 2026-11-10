@@ -64,6 +64,42 @@ Most endpoints return:
 
 Errors use the same keys with `success: false` and appropriate HTTP status (`400` validation, `401`, `403`, `404`, `409`, `413`, `500`). **Exceptions:** raw bytes for `GET /files/download/{id}`, `GET /files/preview/{id}`, and `GET /files/stream/{id}` (Range / video).
 
+## Health
+
+`GET /health` is unauthenticated and returns plain JSON (not the API envelope):
+
+```json
+{ "status": "ok", "checks": { "app": "ok", "mongo": "ok", "storage/config": "ok" }, "timestamp": "…Z" }
+```
+
+When `AGENT_URL` is set (e.g. serverless control plane), the `storage/config` check is replaced by an `agent` reachability probe against the edge host’s `GET /health`.
+
+## Agent delegation (`AGENT_URL`)
+
+For a split deployment (API in the cloud, disks on a home Pi), set `AGENT_URL` to the agent’s base URL (no trailing slash). File and disk routes in `files.py`, `files_browse.py`, and disk-related `storage.py` handlers forward to the agent over HTTP (`httpx`) instead of local `app/services/*` disk logic. Service modules are unchanged; routes use lazy imports for local mode only.
+
+| Variable | Purpose |
+|----------|---------|
+| `AGENT_URL` | Base URL of the Pi / edge NAS API (optional; unset = all disk I/O local) |
+| `AGENT_TOKEN` | Optional shared secret sent as `X-Agent-Token` on delegated calls |
+
+The caller’s `Authorization: Bearer …` JWT is forwarded to the agent. On Lambda or similar, **`AGENT_URL` is required** for upload, download, browse, and storage status/device routes; Mongo-backed auth still runs on the control plane.
+
+**Agent REST contract** (same paths as this API on the agent host):
+
+| Method | Path |
+|--------|------|
+| GET | `/health` |
+| POST | `/files/upload` |
+| GET | `/files`, `/files/browse`, `/files/{id}`, `/files/folders/tree` |
+| GET | `/files/download/{id}`, `/files/preview/{id}`, `/files/stream/{id}` |
+| DELETE | `/files/{id}` |
+| POST | `/files/folders`, `/files/move`, `/files/copy`, `/files/rename`, `/files/folders/rename` |
+| GET | `/storage/status`, `/storage/devices`, `/storage/browse` |
+| POST | `/storage/devices/config`, `/storage/mount`, `/storage/unmount`, `/storage/format` |
+
+If the agent is down or misconfigured, delegated routes return `503` / `504` with a clear message. The edge agent implementation may land in a separate repo; until then, point `AGENT_URL` at a full NAS API instance on the Pi.
+
 ## API overview
 
 | Area | Endpoints |
@@ -73,6 +109,7 @@ Errors use the same keys with `success: false` and appropriate HTTP status (`400
 | User | `GET /users/me` (alias; same envelope) |
 | Devices | `POST /devices/register`, `GET /devices`, `PATCH /devices/{id}/heartbeat`, `GET /devices/{id}`, `DELETE /devices/{id}` |
 | Files | `POST /files/upload`, `GET /files?limit&offset&sort`, `GET /files/preview/{id}`, `GET /files/stream/{id}`, `GET /files/download/{id}`, `GET /files/{id}`, `DELETE /files/{id}` |
+| Health | `GET /health` |
 | Storage | `GET /storage/status` |
 | Dashboard | `GET /dashboard/overview` |
 | Realtime (stub) | WebSocket `WS /ws` |
