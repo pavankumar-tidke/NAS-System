@@ -2,9 +2,8 @@
 # Build produces a Lambda deployment zip; deploy runs only on push to master (not PRs).
 #
 # GitHub configuration (repository Settings → Secrets and variables → Actions):
-#   Secrets: AWS_ROLE_ARN (OIDC), LAMBDA_FUNCTION_NAME
-#            Optional key fallback: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-#   Variables: AWS_REGION (e.g. us-east-1)
+#   Variables: AWS_ROLE_ARN (OIDC), LAMBDA_FUNCTION_NAME, AWS_REGION (e.g. us-east-1)
+#   Optional key fallback secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 
 name: CI/CD
 
@@ -76,12 +75,12 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Update Lambda function code
         env:
-          LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
+          LAMBDA_FUNCTION_NAME: ${{ vars.LAMBDA_FUNCTION_NAME }}
         run: |
           aws lambda update-function-code \
             --function-name "$LAMBDA_FUNCTION_NAME" \
