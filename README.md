@@ -97,3 +97,42 @@ Errors use the same keys with `success: false` and appropriate HTTP status (`400
 
 - Keep `maxPoolSize` low in `app/db/mongo.py` if memory is tight.
 - Prefer a dedicated ext4 mount for `STORAGE_PATH` and ensure the `pi` user can write to it.
+
+## CI/CD
+
+GitHub Actions workflow: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
+
+| Trigger | What runs |
+|---------|-----------|
+| Pull request → `master` | Build Lambda zip artifact only |
+| Push → `master` | Build, then `aws lambda update-function-code` |
+
+**Handler:** set the function handler to `lambda_handler.handler` (Mangum wraps `app.main:app`).
+
+### GitHub configuration
+
+| Kind | Name | Purpose |
+|------|------|---------|
+| Variable | `AWS_REGION` | Region for deploy |
+| Secret | `AWS_ROLE_ARN` | IAM role for OIDC (`aws-actions/configure-aws-credentials`) |
+| Secret | `LAMBDA_FUNCTION_NAME` | Function to update |
+
+### OIDC setup (recommended)
+
+1. Add GitHub OIDC provider in IAM (`token.actions.githubusercontent.com`).
+2. Create a role trusted by your repo/branch with `lambda:UpdateFunctionCode` (and related) on the target function.
+3. Set `AWS_ROLE_ARN` to that role.
+
+### Access-key fallback
+
+If OIDC is not available, replace the credentials step with `aws-access-key-id` / `aws-secret-access-key` from repository secrets (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) per [configure-aws-credentials](https://github.com/aws-actions/configure-aws-credentials) docs. Prefer OIDC for production.
+
+### Local zip build (same as CI)
+
+```bash
+mkdir -p package
+pip install -r requirements.txt -t package
+cp -r app package/
+cp lambda_handler.py package/
+cd package && zip -r9 ../lambda-deployment.zip .
+```

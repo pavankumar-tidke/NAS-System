@@ -1,0 +1,88 @@
+# NAS-System CI/CD — lint/typecheck/unit tests are not defined in this repo today.
+# Build produces a Lambda deployment zip; deploy runs only on push to master (not PRs).
+#
+# GitHub configuration (repository Settings → Secrets and variables → Actions):
+#   Secrets: AWS_ROLE_ARN (OIDC), LAMBDA_FUNCTION_NAME
+#            Optional key fallback: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+#   Variables: AWS_REGION (e.g. us-east-1)
+
+name: CI/CD
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "app/**"
+      - "requirements.txt"
+      - "lambda_handler.py"
+      - ".github/workflows/**"
+  pull_request:
+    branches: [master]
+    paths:
+      - "app/**"
+      - "requirements.txt"
+      - "lambda_handler.py"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Lambda package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies into package/
+        run: |
+          mkdir -p package
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -t package
+          cp -r app package/
+          cp lambda_handler.py package/
+
+      - name: Create deployment zip
+        run: |
+          cd package
+          zip -r9 ../lambda-deployment.zip .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lambda-deployment-zip
+          path: lambda-deployment.zip
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to Lambda
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lambda-deployment-zip
+
+      # Preferred: GitHub OIDC → IAM role (no long-lived access keys).
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Update Lambda function code
+        env:
+          LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
+        run: |
+          aws lambda update-function-code \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
+            --zip-file fileb://lambda-deployment.zip
