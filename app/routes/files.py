@@ -165,6 +165,7 @@ async def list_files(
     summary="Download full file",
     description="Returns raw bytes with correct filename (not JSON envelope).",
     response_class=FileResponse,
+    response_model=None,
 )
 async def download_file(
     request: Request,
@@ -200,6 +201,7 @@ async def download_file(
     summary="Image preview",
     description="Same as download but **images only** — suitable for `<img src>`.",
     response_class=FileResponse,
+    response_model=None,
 )
 async def preview_file(
     request: Request,

@@ -99,7 +99,8 @@ async def lifespan(_app: FastAPI):
         print(mongo_startup_banner(exc), file=sys.stderr, flush=True)
         short = summarize_mongo_error(exc)
         _uvicorn_logger.error("%s", short)
-        raise RuntimeError(short) from None
+        # Lambda/API GW: do not abort lifespan — GET /health reports mongo status (503 degraded).
+        log.warning("Continuing without MongoDB (health will report degraded until Atlas is reachable)")
 
     sp = settings.storage_path.resolve()
     log.info("Storage: path=%s exists=%s", sp, sp.exists())
