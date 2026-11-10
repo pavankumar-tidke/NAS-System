@@ -11,6 +11,7 @@ from fastapi import APIRouter, Response, status
 from fastapi.responses import JSONResponse
 from pymongo.errors import PyMongoError
 
+from app.core.agent_client import check_agent_reachable
 from app.core.config import get_settings
 from app.db.mongo import ping_mongodb
 
@@ -62,11 +63,15 @@ async def _check_mongo() -> str:
     response_class=JSONResponse,
 )
 async def health() -> Response:
+    settings = get_settings()
     checks: dict[str, str] = {
         "app": "ok",
         "mongo": await _check_mongo(),
-        "storage/config": _check_storage_config(),
     }
+    if settings.agent_mode_enabled():
+        checks["agent"] = await check_agent_reachable()
+    else:
+        checks["storage/config"] = _check_storage_config()
     overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
     body = {
         "status": overall,

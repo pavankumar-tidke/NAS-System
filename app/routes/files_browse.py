@@ -4,15 +4,15 @@ Path-based browse, folders, move/copy/rename (JWT).
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.core.agent_client import AgentClient, agent_mode_enabled
 from app.deps import get_current_user
 from app.middleware.rbac import require_roles
 from app.models.file import FileType
 from app.models.user import Role, UserInDB
 from app.schemas.api_response import APIEnvelope, ok
-from app.services import browse_service
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -42,6 +42,10 @@ class RenameFolderBody(BaseModel):
     new_name: str = Field(min_length=1, max_length=200)
 
 
+def _auth_header(request: Request) -> str | None:
+    return request.headers.get("authorization")
+
+
 @router.get(
     "/browse",
     response_model=APIEnvelope,
@@ -49,6 +53,7 @@ class RenameFolderBody(BaseModel):
     description="List files and subfolders at a path under storage/{user_id}/.",
 )
 async def browse_files(
+    request: Request,
     user: Annotated[UserInDB, Depends(get_current_user)],
     path: Annotated[str, Query(description="Relative path (e.g. files or files/Documents)")] = "",
     limit: Annotated[int, Query(ge=1, le=100)] = 24,
@@ -63,9 +68,29 @@ async def browse_files(
 ) -> APIEnvelope:
     is_admin = user.role == Role.admin
     if user_id and not is_admin:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only filter")
+    if agent_mode_enabled():
+        params: dict[str, str | int] = {
+            "path": path,
+            "limit": limit,
+            "offset": offset,
+            "sort": sort,
+        }
+        if search is not None:
+            params["search"] = search
+        if file_type is not None:
+            params["type"] = file_type
+        if user_id is not None:
+            params["user_id"] = user_id
+        return await AgentClient.get_json(
+            "/files/browse",
+            _auth_header(request),
+            params=params,
+            context="browse",
+        )
+
+    from app.services import browse_service
+
     owner = user_id if is_admin and user_id else None
     tree_owner = owner or user.id
     rel = browse_service.normalize_rel_path(path)
@@ -107,9 +132,21 @@ async def browse_files(
     summary="Create folder",
 )
 async def create_folder(
+    request: Request,
     body: CreateFolderBody,
     user: Annotated[UserInDB, Depends(require_roles(Role.member, Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/files/folders",
+            _auth_header(request),
+            method="POST",
+            json_body=body.model_dump(),
+            context="create folder",
+        )
+
+    from app.services import browse_service
+
     data = await browse_service.create_folder(user_id=user.id, parent_path=body.parent_path, name=body.name)
     return ok(data, "Folder created")
 
@@ -120,9 +157,21 @@ async def create_folder(
     summary="Move files",
 )
 async def move_files(
+    request: Request,
     body: MoveFilesBody,
     user: Annotated[UserInDB, Depends(require_roles(Role.member, Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/files/move",
+            _auth_header(request),
+            method="POST",
+            json_body=body.model_dump(),
+            context="move files",
+        )
+
+    from app.services import browse_service
+
     n = await browse_service.move_files(
         user_id=user.id,
         actor_id=user.id,
@@ -140,9 +189,21 @@ async def move_files(
     status_code=status.HTTP_201_CREATED,
 )
 async def copy_file_route(
+    request: Request,
     body: CopyFileBody,
     user: Annotated[UserInDB, Depends(require_roles(Role.member, Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/files/copy",
+            _auth_header(request),
+            method="POST",
+            json_body=body.model_dump(),
+            context="copy file",
+        )
+
+    from app.services import browse_service
+
     meta = await browse_service.copy_file(
         user_id=user.id,
         actor_id=user.id,
@@ -151,8 +212,6 @@ async def copy_file_route(
         target_path=body.target_path,
     )
     if meta is None:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return ok(meta.model_dump(mode="json"), "File copied")
 
@@ -163,9 +222,21 @@ async def copy_file_route(
     summary="Rename file",
 )
 async def rename_file_route(
+    request: Request,
     body: RenameFileBody,
     user: Annotated[UserInDB, Depends(require_roles(Role.member, Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/files/rename",
+            _auth_header(request),
+            method="POST",
+            json_body=body.model_dump(),
+            context="rename file",
+        )
+
+    from app.services import browse_service
+
     meta = await browse_service.rename_file(
         user_id=user.id,
         actor_id=user.id,
@@ -174,8 +245,6 @@ async def rename_file_route(
         new_name=body.new_name,
     )
     if meta is None:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return ok(meta.model_dump(mode="json"), "Renamed")
 
@@ -186,9 +255,21 @@ async def rename_file_route(
     summary="Rename folder",
 )
 async def rename_folder_route(
+    request: Request,
     body: RenameFolderBody,
     user: Annotated[UserInDB, Depends(require_roles(Role.member, Role.admin))],
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/files/folders/rename",
+            _auth_header(request),
+            method="POST",
+            json_body=body.model_dump(),
+            context="rename folder",
+        )
+
+    from app.services import browse_service
+
     new_path = await browse_service.rename_folder(
         user_id=user.id,
         actor_id=user.id,
@@ -205,8 +286,19 @@ async def rename_folder_route(
     summary="Folder tree for picker",
 )
 async def folder_tree(
+    request: Request,
     user: Annotated[UserInDB, Depends(get_current_user)],
     max_depth: Annotated[int, Query(ge=1, le=20)] = 8,
 ) -> APIEnvelope:
+    if agent_mode_enabled():
+        return await AgentClient.get_json(
+            "/files/folders/tree",
+            _auth_header(request),
+            params={"max_depth": max_depth},
+            context="folder tree",
+        )
+
+    from app.services import browse_service
+
     tree = await browse_service.get_folder_tree(user_id=user.id, max_depth=max_depth)
     return ok(tree, "Folder tree loaded")

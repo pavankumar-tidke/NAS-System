@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # Comma-separated allowed mount parent paths (e.g. /mnt,/media)
     storage_mount_allow_prefixes: str = Field(default="/mnt,/media", alias="STORAGE_MOUNT_ALLOW_PREFIXES")
 
+    # Optional Pi / edge agent base URL (no trailing slash). When set, disk/file routes delegate via HTTP.
+    agent_url: str | None = Field(default=None, alias="AGENT_URL")
+    # Optional delegation token sent to the agent as `X-Agent-Token` (service-to-service).
+    agent_token: str | None = Field(default=None, alias="AGENT_TOKEN")
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _strip_cors(cls, v: str) -> str:
@@ -72,6 +77,14 @@ class Settings(BaseSettings):
     def storage_mount_allow_prefixes_list(self) -> list[str]:
         parts = [p.strip().rstrip("/") for p in self.storage_mount_allow_prefixes.split(",") if p.strip()]
         return parts if parts else ["/mnt", "/media"]
+
+    def agent_base_url(self) -> str | None:
+        if not self.agent_url:
+            return None
+        return self.agent_url.rstrip("/")
+
+    def agent_mode_enabled(self) -> bool:
+        return bool(self.agent_base_url())
 
 
 @lru_cache
