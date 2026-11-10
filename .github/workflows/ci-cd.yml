@@ -2,7 +2,9 @@
 # Build produces a Lambda deployment zip; deploy runs only on push to master (not PRs).
 #
 # GitHub configuration (repository Settings → Secrets and variables → Actions):
-#   Variables: AWS_ROLE_ARN (OIDC), LAMBDA_FUNCTION_NAME, AWS_REGION (e.g. us-east-1)
+#   Variables: AWS_ROLE_ARN (OIDC), LAMBDA_FUNCTION_NAME, AWS_REGION (e.g. ap-south-1)
+#   ENV_S3_BUCKET (default: apps-backend-configs), ENV_S3_KEY (default: nas-backend/.env)
+#   Optional ENV_S3_REGION — S3 bucket region (defaults to AWS_REGION; bucket may differ from Lambda)
 #   Optional key fallback secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 
 name: CI/CD
@@ -30,6 +32,9 @@ jobs:
   build:
     name: Build Lambda package
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +51,37 @@ jobs:
           pip install -r requirements.txt -t package
           cp -r app package/
           cp lambda_handler.py package/
+
+      # Production .env is baked into the zip (app.core.config loads env_file=".env" from Lambda CWD = zip root).
+      - name: Configure AWS credentials (OIDC) for env config
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.ENV_S3_REGION || vars.AWS_REGION }}
+
+      - name: Download Lambda .env from S3
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          ENV_S3_BUCKET: ${{ vars.ENV_S3_BUCKET || 'apps-backend-configs' }}
+          ENV_S3_KEY: ${{ vars.ENV_S3_KEY || 'nas-backend/.env' }}
+          ENV_S3_REGION: ${{ vars.ENV_S3_REGION || vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ENV_S3_BUCKET}" ] || [ -z "${ENV_S3_KEY}" ]; then
+            echo "::error::ENV_S3_BUCKET and ENV_S3_KEY must be set (repository Variables) for master deploy builds."
+            exit 1
+          fi
+          echo "Fetching s3://${ENV_S3_BUCKET}/${ENV_S3_KEY} (region: ${ENV_S3_REGION}) → package/.env"
+          if ! aws s3 cp "s3://${ENV_S3_BUCKET}/${ENV_S3_KEY}" package/.env --region "${ENV_S3_REGION}"; then
+            echo "::error::Failed to download Lambda .env from S3. Upload the file and ensure the OIDC role has s3:GetObject on this object."
+            exit 1
+          fi
+          if [ ! -s package/.env ]; then
+            echo "::error::Downloaded .env is missing or empty."
+            rm -f package/.env
+            exit 1
+          fi
 
       - name: Create deployment zip
         run: |

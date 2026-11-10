@@ -155,9 +155,23 @@ Workflows:
 
 | Name | Purpose |
 |------|---------|
-| `AWS_REGION` | Region for Lambda deploy |
+| `AWS_REGION` | Region for Lambda deploy (e.g. `ap-south-1`) |
 | `AWS_ROLE_ARN` | IAM role ARN for OIDC |
 | `LAMBDA_FUNCTION_NAME` | Target function (e.g. `nas-system-lambda`) |
+| `ENV_S3_BUCKET` | S3 bucket holding the Lambda `.env` (default if unset: `apps-backend-configs`) |
+| `ENV_S3_KEY` | Object key (default if unset: `nas-backend/.env`) |
+| `ENV_S3_REGION` | Optional — bucket region for `aws s3 cp` (defaults to `AWS_REGION`). Use when the config bucket lives in a different region than Lambda (e.g. bucket in `us-east-1`, function in `ap-south-1`). |
+
+On **push to `master`**, the build job downloads `s3://$ENV_S3_BUCKET/$ENV_S3_KEY` via OIDC and places it at `package/.env` before zipping. Pydantic loads `env_file=".env"` from the Lambda task root (same layout as `lambda_handler.py` in the zip). Pull-request builds skip the download (zip only). Deploy fails if the object is missing or empty on master.
+
+**Upload production `.env` (one-time or when secrets change):**
+
+```bash
+aws s3 cp .env s3://apps-backend-configs/nas-backend/.env --region us-east-1
+# Adjust bucket, key, and --region to match your ENV_S3_* variables.
+```
+
+Do not commit `.env`. Grant the CI/CD OIDC role `s3:GetObject` on that object (and `s3:ListBucket` on the bucket prefix if your policy requires it).
 
 ### GitHub variables (setup infrastructure)
 
@@ -181,7 +195,7 @@ Deploy does **not** create or change API Gateway; re-run setup only when routing
 
 ### IAM permissions
 
-- **CI/CD deploy role:** `lambda:UpdateFunctionCode` (and related read on the function).
+- **CI/CD deploy role:** `lambda:UpdateFunctionCode` (and related read on the function); `s3:GetObject` on the Lambda `.env` object used at build time (`ENV_S3_BUCKET` / `ENV_S3_KEY`).
 - **Setup infrastructure role:** API Gateway HTTP API (v2) management and `lambda:AddPermission`. The **NovaSafe** role includes these.
 
 ### OIDC setup (recommended)
