@@ -11,6 +11,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException, Request, UploadFile, status
@@ -22,6 +23,12 @@ from app.schemas.api_response import APIEnvelope, ok
 _log = logging.getLogger("nas")
 
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=120.0, pool=5.0)
+
+
+def agent_path_with_file_id(base: str, file_id: str) -> str:
+    """Build agent URL path with file_id encoded as a single path segment."""
+    base = base.rstrip("/")
+    return f"{base}/{quote(file_id, safe='')}"
 _UPLOAD_TIMEOUT = httpx.Timeout(connect=5.0, read=600.0, write=600.0, pool=5.0)
 
 

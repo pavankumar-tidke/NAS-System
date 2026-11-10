@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
 
-from app.core.agent_client import AgentClient, agent_mode_enabled
+from app.core.agent_client import AgentClient, agent_mode_enabled, agent_path_with_file_id
 from app.core.audit_log import log_file_download, log_file_upload
 from app.deps import get_current_user
 from app.middleware.rbac import require_roles
@@ -174,7 +174,7 @@ async def download_file(
 ) -> FileResponse | Response:
     if agent_mode_enabled():
         return await AgentClient.get_binary(
-            f"/files/download/{file_id}",
+            agent_path_with_file_id("/files/download", file_id),
             _auth_header(request),
             context="download",
         )
@@ -210,7 +210,7 @@ async def preview_file(
 ) -> FileResponse | Response:
     if agent_mode_enabled():
         return await AgentClient.get_binary(
-            f"/files/preview/{file_id}",
+            agent_path_with_file_id("/files/preview", file_id),
             _auth_header(request),
             context="preview",
         )
@@ -244,10 +244,18 @@ async def stream_file(
     user: Annotated[UserInDB, Depends(get_current_user)],
 ):
     if agent_mode_enabled():
-        return await AgentClient.stream_binary(
-            f"/files/stream/{file_id}",
+        path = agent_path_with_file_id("/files/stream", file_id)
+        range_header = request.headers.get("range")
+        if range_header:
+            return await AgentClient.stream_binary(
+                path,
+                _auth_header(request),
+                range_header=range_header,
+                context="stream",
+            )
+        return await AgentClient.get_binary(
+            path,
             _auth_header(request),
-            range_header=request.headers.get("range"),
             context="stream",
         )
 
@@ -301,7 +309,7 @@ async def get_file(
 ) -> APIEnvelope:
     if agent_mode_enabled():
         return await AgentClient.get_json(
-            f"/files/{file_id}",
+            agent_path_with_file_id("/files", file_id),
             _auth_header(request),
             context="file metadata",
         )
@@ -326,7 +334,7 @@ async def delete_file(
 ) -> APIEnvelope:
     if agent_mode_enabled():
         return await AgentClient.get_json(
-            f"/files/{file_id}",
+            agent_path_with_file_id("/files", file_id),
             _auth_header(request),
             method="DELETE",
             context="delete file",
