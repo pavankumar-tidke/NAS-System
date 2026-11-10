@@ -215,6 +215,11 @@ class AgentClient:
         extra_headers: Mapping[str, str] | None = None,
         context: str,
     ) -> Response:
+        """Fetch a full response body from the agent (buffered). Safe for Lambda/Mangum.
+
+        Forwards optional headers such as ``Range``; returns ``206`` + ``Content-Range`` as a
+        plain ``Response``, not ``StreamingResponse``.
+        """
         url = f"{_base_url()}{path}"
         headers = _build_headers(authorization)
         if extra_headers:
