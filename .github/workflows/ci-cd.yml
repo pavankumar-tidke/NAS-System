@@ -1,5 +1,5 @@
 # NAS-System CI/CD — lint/typecheck/unit tests are not defined in this repo today.
-# Build produces a Lambda deployment zip; deploy runs only on push to master (not PRs).
+# Build produces a Lambda deployment zip; deploy runs on push to master and on workflow_dispatch (not PRs).
 #
 # GitHub configuration (repository Settings → Secrets and variables → Actions):
 #   Variables: AWS_ROLE_ARN (OIDC), LAMBDA_FUNCTION_NAME, AWS_REGION (e.g. ap-south-1)
@@ -55,14 +55,14 @@ jobs:
 
       # Production .env is baked into the zip (app.core.config loads env_file=".env" from Lambda CWD = zip root).
       - name: Configure AWS credentials (OIDC) for env config
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.ENV_S3_REGION || vars.AWS_REGION }}
 
       - name: Download Lambda .env from S3
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
         env:
           ENV_S3_BUCKET: ${{ vars.ENV_S3_BUCKET || 'apps-backend-configs' }}
           ENV_S3_KEY: ${{ vars.ENV_S3_KEY || 'nas-backend/.env' }}
@@ -98,7 +98,7 @@ jobs:
   deploy:
     name: Deploy to Lambda
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
