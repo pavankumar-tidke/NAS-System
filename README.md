@@ -138,27 +138,56 @@ If the agent is down or misconfigured, delegated routes return `503` / `504` wit
 
 ## CI/CD
 
-GitHub Actions workflow: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
+Workflows:
+
+- [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) — build and deploy Lambda code on push to `master`
+- [`.github/workflows/setup-infrastructure.yml`](.github/workflows/setup-infrastructure.yml) — manual HTTP API (v2) in front of Lambda
 
 | Trigger | What runs |
 |---------|-----------|
 | Pull request → `master` | Build Lambda zip artifact only |
 | Push → `master` | Build, then `aws lambda update-function-code` |
+| **Actions → Setup infrastructure → Run workflow** | Idempotent HTTP API v2 (`ap-south-1` via `AWS_REGION`), `ANY /{proxy+}` → Lambda, optional custom domain |
 
 **Handler:** set the function handler to `lambda_handler.handler` (Mangum wraps `app.main:app`).
 
-### GitHub configuration
+### GitHub variables (CI/CD deploy)
 
-| Kind | Name | Purpose |
-|------|------|---------|
-| Variable | `AWS_REGION` | Region for deploy |
-| Secret | `AWS_ROLE_ARN` | IAM role for OIDC (`aws-actions/configure-aws-credentials`) |
-| Secret | `LAMBDA_FUNCTION_NAME` | Function to update |
+| Name | Purpose |
+|------|---------|
+| `AWS_REGION` | Region for Lambda deploy |
+| `AWS_ROLE_ARN` | IAM role ARN for OIDC |
+| `LAMBDA_FUNCTION_NAME` | Target function (e.g. `nas-system-lambda`) |
+
+### GitHub variables (setup infrastructure)
+
+| Name | Purpose |
+|------|---------|
+| `AWS_REGION` | Use `ap-south-1` for the regional HTTP API and regional ACM cert |
+| `AWS_ROLE_ARN` | Same OIDC role (needs API Gateway v2 + `lambda:AddPermission`; **NovaSafe** role has admin) |
+| `LAMBDA_FUNCTION_NAME` | Function behind the API (e.g. `nas-system-lambda`) |
+| `HTTP_API_ID` | Optional — reuse an existing HTTP API instead of resolving/creating `nas-system-api` |
+| `API_DOMAIN` | Optional custom hostname; leave empty to keep the default `execute-api` URL |
+| `ACM_CERTIFICATE_ARN` | Optional — **regional** ACM certificate in `ap-south-1` for HTTP API custom domains (not `us-east-1`; that region is only required for **CloudFront** certs) |
+
+### Run setup infrastructure (manual)
+
+1. In GitHub: **Actions** → **Setup infrastructure** → **Run workflow** (branch `master`).
+2. Ensure `LAMBDA_FUNCTION_NAME` and `AWS_REGION=ap-south-1` are set under **Settings → Secrets and variables → Actions → Variables**.
+3. Optionally set `HTTP_API_ID`, `API_DOMAIN`, and `ACM_CERTIFICATE_ARN` before running.
+4. Open the job **Summary** for the invoke URL (`https://{api-id}.execute-api.ap-south-1.amazonaws.com/` or your custom domain).
+
+Deploy does **not** create or change API Gateway; re-run setup only when routing, permissions, or domain settings change.
+
+### IAM permissions
+
+- **CI/CD deploy role:** `lambda:UpdateFunctionCode` (and related read on the function).
+- **Setup infrastructure role:** API Gateway HTTP API (v2) management and `lambda:AddPermission`. The **NovaSafe** role includes these.
 
 ### OIDC setup (recommended)
 
 1. Add GitHub OIDC provider in IAM (`token.actions.githubusercontent.com`).
-2. Create a role trusted by your repo/branch with `lambda:UpdateFunctionCode` (and related) on the target function.
+2. Create a role trusted by your repo/branch with the permissions your workflows need.
 3. Set `AWS_ROLE_ARN` to that role.
 
 ### Access-key fallback

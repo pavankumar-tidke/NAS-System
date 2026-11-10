@@ -1,0 +1,141 @@
+# One-time / occasional AWS front-door setup (HTTP API v2 → Lambda). Not run on push/PR.
+#
+# GitHub variables: AWS_ROLE_ARN, AWS_REGION (use ap-south-1), LAMBDA_FUNCTION_NAME
+# Optional: HTTP_API_ID, API_DOMAIN, ACM_CERTIFICATE_ARN (regional cert in AWS_REGION)
+
+name: Setup infrastructure
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  setup-http-api:
+    name: HTTP API v2 + Lambda invoke permission
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Ensure HTTP API, routes, and optional custom domain
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          LAMBDA_FUNCTION_NAME: ${{ vars.LAMBDA_FUNCTION_NAME }}
+          HTTP_API_ID: ${{ vars.HTTP_API_ID }}
+          API_DOMAIN: ${{ vars.API_DOMAIN }}
+          ACM_CERTIFICATE_ARN: ${{ vars.ACM_CERTIFICATE_ARN }}
+        run: |
+          set -euo pipefail
+          API_NAME="nas-system-api"
+          STMT_ID="allow-apigw-nas-system"
+
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          LAMBDA_ARN="arn:aws:lambda:${AWS_REGION}:${ACCOUNT_ID}:function:${LAMBDA_FUNCTION_NAME}"
+          INTEGRATION_URI="arn:aws:apigateway:${AWS_REGION}:lambda:path/2015-03-31/functions/${LAMBDA_ARN}/invocations"
+
+          resolve_api_id() {
+            if [ -n "${HTTP_API_ID:-}" ]; then
+              echo "$HTTP_API_ID"
+              return
+            fi
+            aws apigatewayv2 get-apis --query "Items[?Name=='${API_NAME}'].ApiId | [0]" --output text \
+              | sed 's/None$//' | tr -d '[:space:]'
+          }
+
+          API_ID="$(resolve_api_id)"
+          if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
+            echo "Creating HTTP API ${API_NAME} in ${AWS_REGION}..."
+            API_ID="$(aws apigatewayv2 create-api \
+              --name "$API_NAME" \
+              --protocol-type HTTP \
+              --tags Name="$API_NAME" \
+              --query ApiId --output text)"
+            echo "Created API ${API_ID}. Set repository variable HTTP_API_ID=${API_ID} to reuse it."
+          else
+            echo "Using HTTP API ${API_ID}"
+          fi
+
+          INTEGRATION_ID=""
+          while read -r iid uri; do
+            if [ "$uri" = "$INTEGRATION_URI" ]; then
+              INTEGRATION_ID="$iid"
+              break
+            fi
+          done < <(aws apigatewayv2 get-integrations --api-id "$API_ID" \
+            --query "Items[].[IntegrationId,IntegrationUri]" --output text 2>/dev/null || true)
+          if [ -z "$INTEGRATION_ID" ] || [ "$INTEGRATION_ID" = "None" ]; then
+            echo "Creating Lambda proxy integration..."
+            INTEGRATION_ID="$(aws apigatewayv2 create-integration \
+              --api-id "$API_ID" \
+              --integration-type AWS_PROXY \
+              --integration-method POST \
+              --integration-uri "$INTEGRATION_URI" \
+              --payload-format-version "2.0" \
+              --query IntegrationId --output text)"
+          fi
+
+          ROUTE_KEY='ANY /{proxy+}'
+          EXISTING_ROUTE="$(aws apigatewayv2 get-routes --api-id "$API_ID" \
+            --query "Items[?RouteKey=='${ROUTE_KEY}'].RouteId | [0]" --output text)"
+          if [ -z "$EXISTING_ROUTE" ] || [ "$EXISTING_ROUTE" = "None" ]; then
+            echo "Creating route ${ROUTE_KEY}..."
+            aws apigatewayv2 create-route \
+              --api-id "$API_ID" \
+              --route-key "$ROUTE_KEY" \
+              --target "integrations/${INTEGRATION_ID}" >/dev/null
+          fi
+
+          SOURCE_ARN="arn:aws:execute-api:${AWS_REGION}:${ACCOUNT_ID}:${API_ID}/*/*"
+          if ! aws lambda add-permission \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
+            --statement-id "$STMT_ID" \
+            --action lambda:InvokeFunction \
+            --principal apigateway.amazonaws.com \
+            --source-arn "$SOURCE_ARN" 2>/tmp/lambda-perm.err; then
+            if grep -qE 'ConflictException|ResourceConflictException' /tmp/lambda-perm.err; then
+              echo "Lambda permission already present or statement id taken."
+            else
+              cat /tmp/lambda-perm.err >&2
+              exit 1
+            fi
+          fi
+
+          INVOKE_URL="https://${API_ID}.execute-api.${AWS_REGION}.amazonaws.com/"
+
+          if [ -n "${API_DOMAIN:-}" ]; then
+            if [ -z "${ACM_CERTIFICATE_ARN:-}" ]; then
+              echo "API_DOMAIN set but ACM_CERTIFICATE_ARN empty — skipping custom domain."
+            else
+              if ! aws apigatewayv2 get-domain-name --domain-name "$API_DOMAIN" >/dev/null 2>&1; then
+                echo "Creating custom domain ${API_DOMAIN}..."
+                aws apigatewayv2 create-domain-name \
+                  --domain-name "$API_DOMAIN" \
+                  --domain-name-configurations CertificateArn="$ACM_CERTIFICATE_ARN",EndpointType=REGIONAL >/dev/null
+              fi
+              MAPPED="$(aws apigatewayv2 get-api-mappings --domain-name "$API_DOMAIN" \
+                --query "Items[?ApiId=='${API_ID}'].ApiMappingId | [0]" --output text 2>/dev/null || true)"
+              if [ -z "$MAPPED" ] || [ "$MAPPED" = "None" ]; then
+                aws apigatewayv2 create-api-mapping \
+                  --domain-name "$API_DOMAIN" \
+                  --api-id "$API_ID" \
+                  --stage '$default' >/dev/null
+              fi
+              INVOKE_URL="https://${API_DOMAIN}/"
+            fi
+          fi
+
+          {
+            echo "## API invoke URL"
+            echo ""
+            echo "**${INVOKE_URL}**"
+            echo ""
+            echo "| HTTP API ID | \`${API_ID}\` |"
+            echo "| Region | \`${AWS_REGION}\` |"
+            echo "| Lambda | \`${LAMBDA_FUNCTION_NAME}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
