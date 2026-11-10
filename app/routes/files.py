@@ -252,16 +252,11 @@ async def stream_file(
     if agent_mode_enabled():
         path = agent_path_with_file_id("/files/stream", file_id)
         range_header = request.headers.get("range")
-        if range_header:
-            return await AgentClient.stream_binary(
-                path,
-                _auth_header(request),
-                range_header=range_header,
-                context="stream",
-            )
+        extra_headers = {"Range": range_header} if range_header else None
         return await AgentClient.get_binary(
             path,
             _auth_header(request),
+            extra_headers=extra_headers,
             context="stream",
         )
 
