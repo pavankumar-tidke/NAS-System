@@ -19,7 +19,13 @@ router = APIRouter(prefix="/files", tags=["files"])
 
 
 def _auth_header(request: Request) -> str | None:
-    return request.headers.get("authorization")
+    auth = request.headers.get("authorization")
+    if auth:
+        return auth
+    q = (request.query_params.get("access_token") or "").strip()
+    if q:
+        return f"Bearer {q}"
+    return None
 
 
 @router.post(

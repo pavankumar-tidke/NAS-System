@@ -20,15 +20,22 @@ async def get_current_user(
     request: Request,
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> UserInDB:
-    """Resolve Bearer JWT to a user document (access token only); sets request.state.user."""
-    if creds is None or creds.scheme.lower() != "bearer":
+    """Resolve Bearer JWT (header or ``?access_token=`` for media tags); sets request.state.user."""
+    raw: str | None = None
+    if creds is not None and creds.scheme.lower() == "bearer":
+        raw = creds.credentials
+    if not raw:
+        q = (request.query_params.get("access_token") or "").strip()
+        if q:
+            raw = q
+    if not raw:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        payload = decode_token(creds.credentials)
+        payload = decode_token(raw)
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
