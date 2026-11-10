@@ -1,7 +1,7 @@
 """
 File metadata + streaming to local disk. Designed for large uploads (chunked writes).
 
-On-disk layout under STORAGE_PATH: ``storage/{user_id}/{images|videos|documents|others}/``
+On-disk layout under STORAGE_PATH: human-readable paths (e.g. ``Tes/foo.pdf``); RBAC via Mongo ``user_id``.
 """
 
 from __future__ import annotations
@@ -63,9 +63,9 @@ def _folder_for_type(ftype: FileType) -> str:
 
 
 def _normalize_path_under_files(raw: str | None) -> str | None:
-    """Safe relative path under storage/{user_id}/files/ (segments only).
+    """Safe logical browse path under STORAGE_PATH (segments only).
 
-    ``None`` = use legacy typed folders (images/videos/...). ``""`` = root of ``files/``.
+    ``None`` = use typed folders at storage root (images/videos/...). ``""`` = storage root.
     """
     if raw is None:
         return None
@@ -268,8 +268,8 @@ async def save_upload(
 ) -> FilePublic:
     """Stream upload to disk and persist metadata.
 
-    If ``relative_path`` is set, files are stored under ``storage/{user_id}/files/{relative_path}/``.
-    Otherwise legacy layout ``storage/{user_id}/{images|videos|documents|others}/`` is used.
+    If ``relative_path`` is set, files are stored under ``{relative_path}/`` at STORAGE_PATH.
+    Otherwise they go under ``{images|videos|documents|others}/`` at STORAGE_PATH.
     """
     settings = get_settings()
     max_size = settings.max_upload_size
@@ -292,16 +292,16 @@ async def save_upload(
     unique = f"{uuid.uuid4().hex}_{safe_name}"
     dest_under_files = _normalize_path_under_files(relative_path)
     if dest_under_files is not None:
-        user_dir = root / "storage" / user_id / "files"
+        user_dir = root
         if dest_under_files:
             for segment in dest_under_files.split("/"):
                 user_dir = user_dir / segment
         user_dir.mkdir(parents=True, exist_ok=True)
     else:
-        user_dir = root / "storage" / user_id / subdir
+        user_dir = root / subdir
         user_dir.mkdir(parents=True, exist_ok=True)
     dest = user_dir / unique
-    relative = str(dest.relative_to(root))
+    relative = dest.relative_to(root).as_posix()
 
     size = 0
     try:

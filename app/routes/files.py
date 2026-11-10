@@ -28,7 +28,7 @@ def _auth_header(request: Request) -> str | None:
     status_code=status.HTTP_201_CREATED,
     summary="Multipart upload",
     description=(
-        "Streams the file under `storage/{user_id}/{images|videos|documents|others}/` "
+        "Streams the file from STORAGE_PATH using the Mongo `filepath` (e.g. `documents/…`). "
         "based on MIME/extension. "
         "Honours `MAX_UPLOAD_SIZE` and optional `Content-Length` pre-check."
     ),
@@ -41,7 +41,7 @@ async def upload_file(
     uploaded_by_device_id: str | None = Form(default=None),
     path: str | None = Form(
         default=None,
-        description="Optional destination under storage/{user_id}/files/ (e.g. Photos/Mobile)",
+        description="Optional destination under STORAGE_PATH (e.g. Tes/Photos)",
     ),
 ) -> APIEnvelope:
     if agent_mode_enabled():

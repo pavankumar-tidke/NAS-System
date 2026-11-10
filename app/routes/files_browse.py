@@ -50,7 +50,7 @@ def _auth_header(request: Request) -> str | None:
     "/browse",
     response_model=APIEnvelope,
     summary="Browse folder",
-    description="List files and subfolders at a path under storage/{user_id}/.",
+    description="List files and subfolders at a path under STORAGE_PATH (Mongo user_id scopes files).",
 )
 async def browse_files(
     request: Request,

@@ -1,5 +1,6 @@
 """
-Path-based browsing, folders, move/copy/rename under storage/{user_id}/...
+Path-based browsing, folders, move/copy/rename under STORAGE_PATH (human-readable paths).
+Access control uses Mongo user_id; on-disk layout has no per-user prefix.
 """
 
 from __future__ import annotations
@@ -30,9 +31,11 @@ def _join_under(root: Path, rel: str) -> Path:
     return root.joinpath(*parts) if parts else root
 
 
-def _user_root(user_id: str) -> Path:
+def _storage_root() -> Path:
     settings = get_settings()
-    return (settings.storage_path / "storage" / user_id).resolve()
+    root = settings.storage_path.expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def normalize_rel_path(raw: str | None) -> str:
@@ -52,26 +55,25 @@ def normalize_rel_path(raw: str | None) -> str:
     return "/".join(parts)
 
 
-def _ensure_under_user(base: Path, target: Path) -> Path:
+def _ensure_under_storage(base: Path, target: Path) -> Path:
     try:
         resolved = target.resolve()
         resolved.relative_to(base)
         return resolved
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path escapes user storage") from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path escapes storage root") from exc
 
 
-def ensure_user_tree(user_id: str) -> Path:
-    root = _user_root(user_id)
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "files").mkdir(parents=True, exist_ok=True)
-    return root
+def ensure_storage_ready() -> Path:
+    return _storage_root()
 
 
-def _direct_children_filepath_regex(user_id: str, rel_path: str) -> str:
+def _direct_children_filepath_regex(rel_path: str) -> str:
     """Regex for Mongo: files directly inside rel_path (one filename segment after prefix)."""
-    prefix = f"storage/{user_id}/{rel_path}/" if rel_path else f"storage/{user_id}/"
-    return f"^{re.escape(prefix)}[^/]+$"
+    rel_path = normalize_rel_path(rel_path)
+    if rel_path:
+        return f"^{re.escape(rel_path)}/[^/]+$"
+    return r"^[^/]+$"
 
 
 async def list_browse(
@@ -88,11 +90,11 @@ async def list_browse(
     type_filter: FileType | None,
 ) -> tuple[list[FilePublic], list[dict[str, str]], int]:
     """
-    List subfolders + file rows for the given relative path under storage/{user_id}/.
+    List subfolders + file rows for the given relative path under STORAGE_PATH.
     """
-    ensure_user_tree(user_id)
-    root = _user_root(user_id)
-    base = _ensure_under_user(root, _join_under(root, rel_path))
+    ensure_storage_ready()
+    root = _storage_root()
+    base = _ensure_under_storage(root, _join_under(root, rel_path))
 
     folders: list[dict[str, str]] = []
     if base.is_dir():
@@ -113,7 +115,7 @@ async def list_browse(
         search=search,
         type_filter=type_filter,
     )
-    path_q = {"filepath": {"$regex": _direct_children_filepath_regex(user_id, rel_path)}}
+    path_q = {"filepath": {"$regex": _direct_children_filepath_regex(rel_path)}}
     filters: list[dict[str, Any]] = [path_q, {"user_id": user_id}]
     if base_q:
         filters.insert(0, base_q)
@@ -130,14 +132,13 @@ async def list_browse(
 
 
 async def create_folder(*, user_id: str, parent_path: str, name: str) -> dict[str, str]:
-    """Create a directory under storage/{user_id}/{parent_path}/{name}."""
+    """Create a directory under STORAGE_PATH at parent_path/name."""
     parent_path = normalize_rel_path(parent_path)
     safe_name = Path(name.strip()).name
     if not safe_name or safe_name in (".", "..") or "/" in name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid folder name")
-    ensure_user_tree(user_id)
-    root = _user_root(user_id)
-    dest = _ensure_under_user(root, _join_under(root, parent_path) / safe_name)
+    root = _storage_root()
+    dest = _ensure_under_storage(root, _join_under(root, parent_path) / safe_name)
     if dest.exists():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Folder already exists")
     dest.mkdir(parents=True, exist_ok=True)
@@ -173,9 +174,7 @@ def _folder_tree_nodes(path: Path, rel: str, max_depth: int, depth: int) -> dict
 
 
 async def get_folder_tree(*, user_id: str, max_depth: int = 8) -> dict[str, Any]:
-    ensure_user_tree(user_id)
-    root = _user_root(user_id) / "files"
-    root.mkdir(parents=True, exist_ok=True)
+    root = _storage_root()
     children: list[dict[str, Any]] = []
     try:
         for child in sorted(root.iterdir()):
@@ -186,7 +185,7 @@ async def get_folder_tree(*, user_id: str, max_depth: int = 8) -> dict[str, Any]
                 children.append(sub)
     except OSError:
         pass
-    return {"name": "files", "path": "files", "children": children}
+    return {"name": "", "path": "", "children": children}
 
 
 async def move_files(
@@ -198,9 +197,8 @@ async def move_files(
     target_path: str,
 ) -> int:
     target_path = normalize_rel_path(target_path)
-    ensure_user_tree(user_id)
-    root = _user_root(user_id)
-    dest_dir = _ensure_under_user(root, _join_under(root, target_path))
+    root = _storage_root()
+    dest_dir = _ensure_under_storage(root, _join_under(root, target_path))
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     db = get_db()
@@ -220,7 +218,7 @@ async def move_files(
         if not fs_mod.verify_path_under_storage(old_abs):
             continue
         fname = Path(old_rel).name
-        new_rel_path = f"storage/{user_id}/{target_path}/{fname}"
+        new_rel_path = f"{target_path}/{fname}" if target_path else fname
         new_abs = (get_settings().storage_path / new_rel_path).resolve()
         if not fs_mod.verify_path_under_storage(new_abs):
             continue
@@ -250,9 +248,8 @@ async def copy_file(
     target_path: str,
 ) -> FilePublic | None:
     target_path = normalize_rel_path(target_path)
-    ensure_user_tree(user_id)
-    root = _user_root(user_id)
-    dest_dir = _ensure_under_user(root, _join_under(root, target_path))
+    root = _storage_root()
+    dest_dir = _ensure_under_storage(root, _join_under(root, target_path))
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     db = get_db()
@@ -272,9 +269,9 @@ async def copy_file(
 
     orig_name = doc.get("original_filename") or "unnamed"
     new_unique = f"{uuid.uuid4().hex}_{Path(orig_name).name}"
-    new_rel = f"storage/{user_id}/{target_path}/{new_unique}"
+    new_rel = f"{target_path}/{new_unique}" if target_path else new_unique
     new_abs = (get_settings().storage_path / new_rel).resolve()
-    if not file_service_verify_under_storage(new_abs.parent):
+    if not fs_mod.verify_path_under_storage(new_abs.parent):
         return None
     try:
         shutil.copy2(old_abs, new_abs)
@@ -355,12 +352,12 @@ async def rename_folder(
     if not safe_new or "/" in new_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid name")
 
-    root = _user_root(user_id)
-    old_dir = _ensure_under_user(root, _join_under(root, path))
+    root = _storage_root()
+    old_dir = _ensure_under_storage(root, _join_under(root, path))
     if not old_dir.is_dir():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
     parent = old_dir.parent
-    new_dir = _ensure_under_user(root, parent / safe_new)
+    new_dir = _ensure_under_storage(root, parent / safe_new)
     if new_dir.exists():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Folder already exists")
     try:
@@ -368,11 +365,13 @@ async def rename_folder(
     except OSError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
-    old_prefix = f"storage/{user_id}/{path}"
-    new_prefix = f"storage/{user_id}/{path.rsplit('/', 1)[0]}/{safe_new}" if "/" in path else f"storage/{user_id}/{safe_new}"
+    new_path = f"{path.rsplit('/', 1)[0]}/{safe_new}" if "/" in path else safe_new
+    old_prefix = path
+    new_prefix = new_path
 
     db = get_db()
-    cursor = db.files.find({"user_id": user_id, "filepath": {"$regex": f"^{re.escape(old_prefix)}/"}})
+    prefix_pat = re.escape(old_prefix) + "/"
+    cursor = db.files.find({"user_id": user_id, "filepath": {"$regex": f"^{prefix_pat}"}})
     async for doc in cursor:
         fp = doc["filepath"]
         suffix = fp[len(old_prefix) :]
@@ -382,4 +381,4 @@ async def rename_folder(
             {"$set": {"filepath": new_fp, "updated_at": utc_now()}},
         )
 
-    return f"{path.rsplit('/', 1)[0]}/{safe_new}" if "/" in path else safe_new
+    return new_path
