@@ -68,6 +68,7 @@ Errors use the same keys with `success: false` and appropriate HTTP status (`400
 
 | Area | Endpoints |
 |------|-----------|
+| Health | `GET /health` (plain JSON, no auth — for probes) |
 | Auth | `POST /auth/signup`, `POST /auth/login`, `POST /auth/refresh`, `GET /auth/me` |
 | User | `GET /users/me` (alias; same envelope) |
 | Devices | `POST /devices/register`, `GET /devices`, `PATCH /devices/{id}/heartbeat`, `GET /devices/{id}`, `DELETE /devices/{id}` |
