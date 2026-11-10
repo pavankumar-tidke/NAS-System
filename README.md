@@ -143,7 +143,7 @@ GitHub Actions workflow: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd
 | Trigger | What runs |
 |---------|-----------|
 | Pull request → `master` | Build Lambda zip artifact only |
-| Push → `master` | Build, then `aws lambda update-function-code` |
+| Push → `master` | Build, deploy Lambda, ensure HTTP API (v2) + optional custom domain |
 
 **Handler:** set the function handler to `lambda_handler.handler` (Mangum wraps `app.main:app`).
 
@@ -151,14 +151,23 @@ GitHub Actions workflow: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd
 
 | Kind | Name | Purpose |
 |------|------|---------|
-| Variable | `AWS_REGION` | Region for deploy |
-| Secret | `AWS_ROLE_ARN` | IAM role for OIDC (`aws-actions/configure-aws-credentials`) |
-| Secret | `LAMBDA_FUNCTION_NAME` | Function to update |
+| Variable | `AWS_REGION` | Region for deploy (e.g. `ap-south-1`) |
+| Variable | `AWS_ROLE_ARN` | IAM role ARN for OIDC (`aws-actions/configure-aws-credentials`) |
+| Variable | `LAMBDA_FUNCTION_NAME` | Lambda function to update |
+| Variable | `HTTP_API_ID` | Optional. Existing API Gateway HTTP API id; workflow also resolves `nas-system-api` by name |
+| Variable | `API_DOMAIN` | Optional custom domain (e.g. `api.example.com`); leave empty to use the default `execute-api` URL |
+| Variable | `ACM_CERTIFICATE_ARN` | Optional regional ACM cert in `AWS_REGION` (required when `API_DOMAIN` is set) |
+
+After a successful deploy, the workflow writes the invoke URL to the job **Summary** (`https://{api-id}.execute-api.{region}.amazonaws.com/` or your custom domain).
+
+### IAM permissions (deploy role)
+
+The OIDC role needs at least `lambda:UpdateFunctionCode`, `lambda:AddPermission`, and API Gateway HTTP API (v2) management (`apigateway:GET`, `POST`, `PATCH`, `DELETE` on `apigatewayv2` resources). The **NovaSafe** role in this project is configured with admin access for deploy.
 
 ### OIDC setup (recommended)
 
 1. Add GitHub OIDC provider in IAM (`token.actions.githubusercontent.com`).
-2. Create a role trusted by your repo/branch with `lambda:UpdateFunctionCode` (and related) on the target function.
+2. Create a role trusted by your repo/branch with the permissions above on the target function and API.
 3. Set `AWS_ROLE_ARN` to that role.
 
 ### Access-key fallback
